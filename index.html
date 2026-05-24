@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MLB K Props · Edge Finder</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%BE%3C/text%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg-1: #0a0e27;
+    --bg-2: #1a1b3a;
+    --bg-3: #0f1729;
+    --card: rgba(255,255,255,0.04);
+    --card-border: rgba(255,255,255,0.08);
+    --text: #e8eaed;
+    --text-dim: #9aa0b4;
+    --text-mute: #6b7290;
+    --accent: #60a5fa;
+    --accent-strong: #3b82f6;
+    --purple: #a78bfa;
+    --positive: #34d399;
+    --positive-bg: rgba(52,211,153,0.10);
+    --negative: #f87171;
+    --negative-bg: rgba(248,113,113,0.10);
+  }
+
+  body {
+    min-height: 100vh;
+    background: linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 50%, var(--bg-3) 100%);
+    background-attachment: fixed;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-feature-settings: 'tnum' 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    padding: 24px 40px;
+    border-bottom: 1px solid var(--card-border);
+    backdrop-filter: blur(12px);
+    background: rgba(10,14,39,0.7);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    max-width: 1700px;
+    margin: 0 auto;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .brand-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display: grid;
+    place-items: center;
+    font-size: 22px;
+    box-shadow: 0 4px 14px rgba(96,165,250,0.35);
+  }
+
+  .brand h1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .brand .subtitle {
+    font-size: 10px;
+    color: var(--text-mute);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+  }
+
+  .control-group label {
+    font-size: 10px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+
+  input[type="date"], input[type="number"] {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    outline: none;
+    color-scheme: dark;
+  }
+
+  .control-group input[type="number"] {
+    width: 70px;
+    text-align: right;
+  }
+
+  button {
+    padding: 10px 18px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+    box-shadow: 0 4px 14px rgba(59,130,246,0.35);
+  }
+
+  button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(59,130,246,0.45);
+  }
+
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  main {
+    padding: 28px 40px 80px;
+    max-width: 1700px;
+    margin: 0 auto;
+  }
+
+  .status {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-dim);
+    font-size: 15px;
+    grid-column: 1 / -1;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    border: 3px solid var(--card-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 10px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+    gap: 18px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+
+  .card:hover {
+    border-color: rgba(255,255,255,0.15);
+  }
+
+  .card-header {
+    padding: 18px 20px 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .team-logos {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .team-logo {
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,0.45));
+  }
+
+  .vs {
+    font-size: 10px;
+    color: var(--text-mute);
+    font-weight: 800;
+    letter-spacing: 0.1em;
+  }
+
+  .pitcher-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pitcher-name {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pitcher-meta {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .hand-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 4px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  .game-time {
+    font-size: 11px;
+    color: var(--text-mute);
+    text-align: right;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+
+  .projection-row {
+    padding: 12px 20px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    background: rgba(0,0,0,0.15);
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .stat { text-align: center; }
+
+  .stat-label {
+    font-size: 9px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 3px;
+    font-weight: 600;
+  }
+
+  .stat-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .lambda-row {
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(90deg, rgba(96,165,250,0.08), transparent);
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .lambda-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  .lambda-label .hint {
+    color: var(--text-mute);
+    font-weight: 400;
+    margin-left: 4px;
+  }
+
+  .lambda-input {
+    width: 80px;
+    font-size: 18px !important;
+    font-weight: 800;
+    color: var(--accent) !important;
+    text-align: right;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+
+  .lambda-input:focus { border-color: var(--accent); outline: none; }
+
+  .input-section {
+    padding: 14px 20px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .input-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .input-field label {
+    font-size: 9px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    font-weight: 600;
+  }
+
+  .input-field input {
+    width: 100%;
+    text-align: center;
+    padding: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    transition: border-color 0.15s;
+  }
+
+  .input-field input:focus { border-color: var(--accent); outline: none; }
+
+  .result-section { padding: 14px 20px 18px; }
+
+  .side-row {
+    display: grid;
+    grid-template-columns: 56px 1fr 1fr 1fr;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 10px;
+    border: 1px solid transparent;
+  }
+
+  .side-row.positive { border-color: rgba(52,211,153,0.3); background: rgba(52,211,153,0.06); }
+
+  .side-label {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .side-label.over { color: var(--accent); }
+  .side-label.under { color: var(--purple); }
+
+  .metric { text-align: center; }
+
+  .metric-label {
+    font-size: 8px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 2px;
+    font-weight: 600;
+  }
+
+  .metric-value {
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .metric-value.positive { color: var(--positive); }
+  .metric-value.negative { color: var(--negative); }
+  .metric-value.neutral { color: var(--text); }
+
+  .bet-row {
+    margin-top: 10px;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, rgba(52,211,153,0.12), rgba(96,165,250,0.06));
+    border: 1px solid rgba(52,211,153,0.25);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .bet-row.no-bet {
+    background: rgba(255,255,255,0.02);
+    border-color: var(--card-border);
+  }
+
+  .bet-info { display: flex; flex-direction: column; gap: 2px; }
+
+  .bet-label {
+    font-size: 10px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+
+  .bet-amount {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--positive);
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+
+  .bet-amount.no-bet {
+    color: var(--text-dim);
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .bet-side {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    padding: 6px 12px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 8px;
+    white-space: nowrap;
+  }
+
+  .empty-hint {
+    text-align: center;
+    color: var(--text-mute);
+    padding: 14px;
+    font-size: 12px;
+  }
+
+  footer {
+    text-align: center;
+    padding: 20px 40px 40px;
+    color: var(--text-mute);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  footer code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+  }
+
+  @media (max-width: 768px) {
+    header { padding: 16px 16px; }
+    main { padding: 20px 12px 60px; }
+    .grid { grid-template-columns: 1fr; }
+    .header-row { flex-direction: column; align-items: stretch; }
+    .controls { justify-content: space-between; }
+    .pitcher-name { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <div class="brand">
+      <div class="brand-icon">⚾</div>
+      <div>
+        <h1>MLB K Props</h1>
+        <div class="subtitle">Edge Finder · Poisson · Kelly</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="control-group">
+        <label>Date</label>
+        <input type="date" id="datePicker">
+      </div>
+      <div class="control-group">
+        <label>Bankroll $</label>
+        <input type="number" id="bankroll" value="1000" step="100" min="0">
+      </div>
+      <div class="control-group">
+        <label>Kelly</label>
+        <input type="number" id="kelly" value="0.125" step="0.025" min="0" max="1" style="width:60px;">
+      </div>
+      <button id="refresh">↻ Refresh Slate</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="slate" class="grid">
+    <div class="status">Pick a date and click <b>Refresh Slate</b>.</div>
+  </div>
+</main>
+
+<footer>
+  Model: Poisson with λ = (K/9) × (IP/GS / 9) × (opp K% / lg K%).
+  Override λ on any card to use your own projection. Edge = model prob − implied prob.
+  Stake = Kelly fraction × bankroll, capped at 0 when edge ≤ 0.
+  Data: <code>statsapi.mlb.com</code> · Logos: <code>mlbstatic.com</code>
+</footer>
+
+<script>
+"use strict";
+
+// ============= MODEL =============
+const LEAGUE_K_PCT = 0.225;          // current MLB ~22.5%
+const DEFAULT_IP_PER_START = 5.2;
+
+function logFactorial(n) {
+  if (n <= 1) return 0;
+  let s = 0;
+  for (let i = 2; i <= n; i++) s += Math.log(i);
+  return s;
+}
+
+function poissonPmf(k, lambda) {
+  if (k < 0 || lambda <= 0) return 0;
+  return Math.exp(-lambda + k * Math.log(lambda) - logFactorial(k));
+}
+
+function poissonCdf(k, lambda) {
+  if (k < 0) return 0;
+  let cdf = 0;
+  for (let i = 0; i <= k; i++) cdf += poissonPmf(i, lambda);
+  return Math.min(1, cdf);
+}
+
+function probOver(line, lambda) {
+  if (Number.isInteger(line)) {
+    // push possible — quote prob excluding push (DraftKings/FanDuel behavior on whole lines)
+    const pPush = poissonPmf(line, lambda);
+    const pOver = 1 - poissonCdf(line, lambda);
+    return pPush >= 0.999 ? 0.5 : pOver / (1 - pPush);
+  }
+  const t = Math.ceil(line);
+  return 1 - poissonCdf(t - 1, lambda);
+}
+
+function americanToImplied(odds) {
+  if (odds === null || odds === undefined || isNaN(odds)) return null;
+  if (odds > 0) return 100 / (odds + 100);
+  return -odds / (-odds + 100);
+}
+
+function americanToDecimal(odds) {
+  if (odds > 0) return 1 + odds / 100;
+  return 1 + 100 / -odds;
+}
+
+function probToAmerican(p) {
+  if (p <= 0 || p >= 1 || isNaN(p)) return null;
+  const d = 1 / p;
+  if (d >= 2) return Math.round((d - 1) * 100);
+  return Math.round(-100 / (d - 1));
+}
+
+function formatAmerican(odds) {
+  if (odds === null || odds === undefined || isNaN(odds)) return '—';
+  return odds > 0 ? `+${odds}` : `${odds}`;
+}
+
+function kellyStake(p, americanOdds, bankroll, fraction) {
+  const b = americanToDecimal(americanOdds) - 1;
+  const q = 1 - p;
+  const f = (p * b - q) / b;
+  if (f <= 0) return 0;
+  return f * bankroll * fraction;
+}
+
+// ============= API =============
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function teamLogoUrl(teamId) {
+  return `https://www.mlbstatic.com/team-logos/${teamId}.svg`;
+}
+
+async function getSchedule(date) {
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${date}&hydrate=probablePitcher,team`;
+  return fetchJSON(url);
+}
+
+async function getPitcherStats(personId, season) {
+  const url = `https://statsapi.mlb.com/api/v1/people/${personId}/stats?stats=season&group=pitching&season=${season}`;
+  return fetchJSON(url);
+}
+
+async function getTeamHitting(teamId, season) {
+  const url = `https://statsapi.mlb.com/api/v1/teams/${teamId}/stats?stats=season&group=hitting&season=${season}`;
+  return fetchJSON(url);
+}
+
+// ============= UI =============
+const $ = id => document.getElementById(id);
+const slate = $('slate');
+
+function setStatus(msg, spinning = false) {
+  slate.innerHTML = `<div class="status">${spinning ? '<span class="spinner"></span>' : ''}${msg}</div>`;
+}
+
+function fmtPct(p) {
+  if (p === null || p === undefined || isNaN(p)) return '—';
+  return (p * 100).toFixed(1) + '%';
+}
+
+function fmtMoney(n) {
+  if (!n || isNaN(n)) return '$0';
+  return '$' + Math.round(n).toLocaleString();
+}
+
+function gameTimeFmt(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+  } catch { return ''; }
+}
+
+async function buildPitcherCard(game, isHomePitcher) {
+  const season = new Date(game.gameDate).getFullYear();
+  const teamSide = isHomePitcher ? game.teams.home : game.teams.away;
+  const oppSide = isHomePitcher ? game.teams.away : game.teams.home;
+  const pitcher = teamSide.probablePitcher;
+  if (!pitcher) return null;
+
+  const card = {
+    id: `${game.gamePk}-${pitcher.id}`,
+    pitcher,
+    pitcherTeam: teamSide.team,
+    oppTeam: oppSide.team,
+    gameDate: game.gameDate,
+    season,
+    isHome: isHomePitcher,
+    stats: null,
+    oppStats: null,
+    lambda: null
+  };
+
+  try {
+    const [pStats, oppStats] = await Promise.all([
+      getPitcherStats(pitcher.id, season).catch(() => null),
+      getTeamHitting(oppSide.team.id, season).catch(() => null)
+    ]);
+
+    const seasonStat = pStats?.stats?.[0]?.splits?.[0]?.stat;
+    if (seasonStat) {
+      const ip = parseFloat(seasonStat.inningsPitched || '0');
+      const gs = seasonStat.gamesStarted || 0;
+      const k = seasonStat.strikeOuts || 0;
+      const kPer9raw = parseFloat(seasonStat.strikeoutsPer9Inn || '0');
+      const kPer9 = kPer9raw || (ip > 0 ? (k * 9 / ip) : 0);
+      const ipPerStart = gs >= 3 ? ip / gs : DEFAULT_IP_PER_START;
+      card.stats = { kPer9, ip, gs, ipPerStart, k };
+    }
+
+    const oppStat = oppStats?.stats?.[0]?.splits?.[0]?.stat;
+    if (oppStat) {
+      const so = oppStat.strikeOuts || 0;
+      const pa = oppStat.plateAppearances || 0;
+      card.oppStats = {
+        kPct: pa > 0 ? so / pa : LEAGUE_K_PCT,
+        pa
+      };
+    }
+
+    if (card.stats && card.stats.kPer9 > 0) {
+      const adj = card.oppStats ? (card.oppStats.kPct / LEAGUE_K_PCT) : 1;
+      card.lambda = card.stats.kPer9 * (card.stats.ipPerStart / 9) * adj;
+    }
+  } catch (e) {
+    console.warn(`Stats fetch failed for ${pitcher.fullName}:`, e);
+  }
+
+  return card;
+}
+
+function renderCard(card) {
+  const lambda = card.lambda ? card.lambda.toFixed(2) : '';
+  const kPer9 = card.stats ? card.stats.kPer9.toFixed(2) : '—';
+  const ipPS = card.stats ? card.stats.ipPerStart.toFixed(1) : '—';
+  const oppK = card.oppStats ? (card.oppStats.kPct * 100).toFixed(1) + '%' : '—';
+  const hand = card.pitcher.pitchHand?.code || '';
+  const handLabel = hand === 'L' ? 'LHP' : hand === 'R' ? 'RHP' : '';
+  const teamAbbr = card.pitcherTeam.abbreviation || card.pitcherTeam.teamCode?.toUpperCase() || '';
+  const oppAbbr = card.oppTeam.abbreviation || card.oppTeam.teamCode?.toUpperCase() || '';
+
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.dataset.cardId = card.id;
+  el.innerHTML = `
+    <div class="card-header">
+      <div class="team-logos">
+        <img class="team-logo" src="${teamLogoUrl(card.pitcherTeam.id)}" alt="${teamAbbr}" onerror="this.style.opacity=0.2">
+        <span class="vs">vs</span>
+        <img class="team-logo" src="${teamLogoUrl(card.oppTeam.id)}" alt="${oppAbbr}" onerror="this.style.opacity=0.2">
+      </div>
+      <div class="pitcher-info">
+        <div class="pitcher-name">${card.pitcher.fullName}</div>
+        <div class="pitcher-meta">
+          ${handLabel ? `<span class="hand-badge">${handLabel}</span>` : ''}
+          <span>${teamAbbr} ${card.isHome ? 'vs' : '@'} ${oppAbbr}</span>
+        </div>
+      </div>
+      <div class="game-time">${gameTimeFmt(card.gameDate)}</div>
+    </div>
+
+    <div class="projection-row">
+      <div class="stat"><div class="stat-label">K/9</div><div class="stat-value">${kPer9}</div></div>
+      <div class="stat"><div class="stat-label">IP/GS</div><div class="stat-value">${ipPS}</div></div>
+      <div class="stat"><div class="stat-label">GS</div><div class="stat-value">${card.stats?.gs ?? '—'}</div></div>
+      <div class="stat"><div class="stat-label">Opp K%</div><div class="stat-value">${oppK}</div></div>
+    </div>
+
+    <div class="lambda-row">
+      <div class="lambda-label">Projected Ks (λ)<span class="hint">— edit to override</span></div>
+      <input type="number" class="lambda-input" data-field="lambda" step="0.1" min="0" value="${lambda}" placeholder="—">
+    </div>
+
+    <div class="input-section">
+      <div class="input-field">
+        <label>K Line</label>
+        <input type="number" data-field="line" step="0.5" min="0" placeholder="6.5">
+      </div>
+      <div class="input-field">
+        <label>Over Odds</label>
+        <input type="number" data-field="overOdds" step="1" placeholder="-115">
+      </div>
+      <div class="input-field">
+        <label>Under Odds</label>
+        <input type="number" data-field="underOdds" step="1" placeholder="-115">
+      </div>
+    </div>
+
+    <div class="result-section">
+      <div class="results-output"></div>
+    </div>
+  `;
+
+  el.querySelectorAll('input[data-field]').forEach(inp => {
+    inp.addEventListener('input', () => updateResults(el));
+  });
+
+  updateResults(el);
+  return el;
+}
+
+function updateResults(el) {
+  const lambda = parseFloat(el.querySelector('[data-field="lambda"]').value);
+  const line = parseFloat(el.querySelector('[data-field="line"]').value);
+  const overOdds = parseFloat(el.querySelector('[data-field="overOdds"]').value);
+  const underOdds = parseFloat(el.querySelector('[data-field="underOdds"]').value);
+  const out = el.querySelector('.results-output');
+
+  const bankroll = parseFloat($('bankroll').value) || 0;
+  const kellyFrac = parseFloat($('kelly').value) || 0;
+
+  if (!lambda || lambda <= 0) {
+    out.innerHTML = '<div class="empty-hint">Enter a projection (λ) to see fair odds.</div>';
+    return;
+  }
+  if (isNaN(line)) {
+    out.innerHTML = '<div class="empty-hint">Enter a K line (e.g. 6.5) to see edge.</div>';
+    return;
+  }
+
+  const pOver = probOver(line, lambda);
+  const pUnder = 1 - pOver;
+
+  const fairOver = probToAmerican(pOver);
+  const fairUnder = probToAmerican(pUnder);
+
+  const overImplied = americanToImplied(overOdds);
+  const underImplied = americanToImplied(underOdds);
+
+  const overEdge = (!isNaN(overOdds) && overImplied !== null) ? (pOver - overImplied) : null;
+  const underEdge = (!isNaN(underOdds) && underImplied !== null) ? (pUnder - underImplied) : null;
+
+  const overPositive = overEdge !== null && overEdge > 0;
+  const underPositive = underEdge !== null && underEdge > 0;
+
+  let html = `
+    <div class="side-row ${overPositive ? 'positive' : ''}">
+      <div class="side-label over">OVER</div>
+      <div class="metric"><div class="metric-label">Model P</div><div class="metric-value neutral">${fmtPct(pOver)}</div></div>
+      <div class="metric"><div class="metric-label">Fair</div><div class="metric-value neutral">${formatAmerican(fairOver)}</div></div>
+      <div class="metric"><div class="metric-label">Edge</div><div class="metric-value ${overEdge === null ? 'neutral' : (overEdge > 0 ? 'positive' : 'negative')}">${overEdge === null ? '—' : (overEdge > 0 ? '+' : '') + (overEdge * 100).toFixed(1) + '%'}</div></div>
+    </div>
+    <div class="side-row ${underPositive ? 'positive' : ''}">
+      <div class="side-label under">UNDER</div>
+      <div class="metric"><div class="metric-label">Model P</div><div class="metric-value neutral">${fmtPct(pUnder)}</div></div>
+      <div class="metric"><div class="metric-label">Fair</div><div class="metric-value neutral">${formatAmerican(fairUnder)}</div></div>
+      <div class="metric"><div class="metric-label">Edge</div><div class="metric-value ${underEdge === null ? 'neutral' : (underEdge > 0 ? 'positive' : 'negative')}">${underEdge === null ? '—' : (underEdge > 0 ? '+' : '') + (underEdge * 100).toFixed(1) + '%'}</div></div>
+    </div>
+  `;
+
+  let bestSide = null, bestStake = 0, bestOdds = null;
+  if (overPositive) {
+    const stake = kellyStake(pOver, overOdds, bankroll, kellyFrac);
+    if (stake > bestStake) { bestStake = stake; bestSide = `OVER ${line}`; bestOdds = overOdds; }
+  }
+  if (underPositive) {
+    const stake = kellyStake(pUnder, underOdds, bankroll, kellyFrac);
+    if (stake > bestStake) { bestStake = stake; bestSide = `UNDER ${line}`; bestOdds = underOdds; }
+  }
+
+  if (bestSide && bestStake > 0) {
+    html += `
+      <div class="bet-row">
+        <div class="bet-info">
+          <div class="bet-label">Recommended Stake · Kelly ${(kellyFrac*100).toFixed(1)}%</div>
+          <div class="bet-amount">${fmtMoney(bestStake)}</div>
+        </div>
+        <div class="bet-side">${bestSide} ${formatAmerican(bestOdds)}</div>
+      </div>
+    `;
+  } else if (!isNaN(overOdds) || !isNaN(underOdds)) {
+    html += `
+      <div class="bet-row no-bet">
+        <div class="bet-info">
+          <div class="bet-label">No Edge</div>
+          <div class="bet-amount no-bet">Pass</div>
+        </div>
+      </div>
+    `;
+  }
+
+  out.innerHTML = html;
+}
+
+function rerenderAllResults() {
+  document.querySelectorAll('.card').forEach(el => updateResults(el));
+}
+
+// ============= MAIN =============
+async function loadSlate() {
+  const date = $('datePicker').value;
+  if (!date) { setStatus('Pick a date first.'); return; }
+
+  const btn = $('refresh');
+  btn.disabled = true;
+  const origBtn = btn.innerHTML;
+  btn.innerHTML = 'Loading...';
+  setStatus(`Loading slate for ${date}...`, true);
+
+  try {
+    const sched = await getSchedule(date);
+    const games = sched?.dates?.[0]?.games || [];
+
+    if (games.length === 0) {
+      setStatus(`No MLB games scheduled on ${date}.`);
+      return;
+    }
+
+    setStatus(`Fetching pitcher stats for ${games.length} games...`, true);
+
+    const cardPromises = [];
+    for (const g of games) {
+      cardPromises.push(buildPitcherCard(g, true));
+      cardPromises.push(buildPitcherCard(g, false));
+    }
+    const cards = (await Promise.all(cardPromises)).filter(c => c);
+
+    if (cards.length === 0) {
+      setStatus(`No probable pitchers announced yet for ${date}.`);
+      return;
+    }
+
+    cards.sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
+
+    slate.innerHTML = '';
+    cards.forEach(c => slate.appendChild(renderCard(c)));
+
+  } catch (e) {
+    setStatus(`Error loading slate: ${e.message}`);
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origBtn;
+  }
+}
+
+// URL state for bookmarkable date
+function getDateFromURL() {
+  return new URLSearchParams(location.search).get('date');
+}
+function setDateInURL(date) {
+  const url = new URL(location.href);
+  url.searchParams.set('date', date);
+  history.replaceState({}, '', url);
+}
+function todayLocal() {
+  const d = new Date();
+  const off = d.getTimezoneOffset() * 60000;
+  return new Date(d - off).toISOString().slice(0, 10);
+}
+
+// init
+const initial = getDateFromURL() || todayLocal();
+$('datePicker').value = initial;
+$('datePicker').addEventListener('change', () => setDateInURL($('datePicker').value));
+$('refresh').addEventListener('click', loadSlate);
+$('bankroll').addEventListener('input', rerenderAllResults);
+$('kelly').addEventListener('input', rerenderAllResults);
+
+loadSlate();
+</script>
+</body>
+</html>
