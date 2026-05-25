@@ -480,6 +480,16 @@
     font-size: 10px;
   }
 
+  .card.loading .stat-value,
+  .card.loading .lambda-input {
+    color: var(--text-mute);
+    animation: pulseFade 1.4s ease-in-out infinite;
+  }
+  @keyframes pulseFade {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 0.85; }
+  }
+
   @media (max-width: 768px) {
     header { padding: 16px 16px; }
     main { padding: 20px 12px 60px; }
@@ -651,14 +661,13 @@ function gameTimeFmt(iso) {
   } catch { return ''; }
 }
 
-async function buildPitcherCard(game, isHomePitcher) {
+function makeCardSkeleton(game, isHomePitcher) {
   const season = new Date(game.gameDate).getFullYear();
   const teamSide = isHomePitcher ? game.teams.home : game.teams.away;
   const oppSide = isHomePitcher ? game.teams.away : game.teams.home;
   const pitcher = teamSide.probablePitcher;
   if (!pitcher) return null;
-
-  const card = {
+  return {
     id: `${game.gamePk}-${pitcher.id}`,
     pitcher,
     pitcherTeam: teamSide.team,
@@ -668,13 +677,16 @@ async function buildPitcherCard(game, isHomePitcher) {
     isHome: isHomePitcher,
     stats: null,
     oppStats: null,
-    lambda: null
+    lambda: null,
+    loading: true
   };
+}
 
+async function fetchAndApplyStats(card) {
   try {
     const [pStats, oppStats] = await Promise.all([
-      getPitcherStats(pitcher.id, season).catch(() => null),
-      getTeamHitting(oppSide.team.id, season).catch(() => null)
+      getPitcherStats(card.pitcher.id, card.season).catch(() => null),
+      getTeamHitting(card.oppTeam.id, card.season).catch(() => null)
     ]);
 
     const seasonStat = pStats?.stats?.[0]?.splits?.[0]?.stat;
@@ -684,7 +696,9 @@ async function buildPitcherCard(game, isHomePitcher) {
       const k = seasonStat.strikeOuts || 0;
       const kPer9raw = parseFloat(seasonStat.strikeoutsPer9Inn || '0');
       const kPer9 = kPer9raw || (ip > 0 ? (k * 9 / ip) : 0);
-      const ipPerStart = gs >= 3 ? ip / gs : DEFAULT_IP_PER_START;
+      // IP/GS gets inflated if pitcher has relief innings too — clamp to a sane starter range
+      const rawIpPerStart = gs >= 3 ? ip / gs : DEFAULT_IP_PER_START;
+      const ipPerStart = (rawIpPerStart >= 3 && rawIpPerStart <= 7.5) ? rawIpPerStart : DEFAULT_IP_PER_START;
       card.stats = { kPer9, ip, gs, ipPerStart, k };
     }
 
@@ -692,10 +706,7 @@ async function buildPitcherCard(game, isHomePitcher) {
     if (oppStat) {
       const so = oppStat.strikeOuts || 0;
       const pa = oppStat.plateAppearances || 0;
-      card.oppStats = {
-        kPct: pa > 0 ? so / pa : LEAGUE_K_PCT,
-        pa
-      };
+      card.oppStats = { kPct: pa > 0 ? so / pa : LEAGUE_K_PCT, pa };
     }
 
     if (card.stats && card.stats.kPer9 > 0) {
@@ -703,10 +714,27 @@ async function buildPitcherCard(game, isHomePitcher) {
       card.lambda = card.stats.kPer9 * (card.stats.ipPerStart / 9) * adj;
     }
   } catch (e) {
-    console.warn(`Stats fetch failed for ${pitcher.fullName}:`, e);
+    console.warn(`Stats fetch failed for ${card.pitcher.fullName}:`, e);
+  } finally {
+    card.loading = false;
+  }
+}
+
+function updateCardStatsDom(el, card) {
+  const stats = el.querySelectorAll('.projection-row .stat-value');
+  stats[0].textContent = card.stats ? card.stats.kPer9.toFixed(2) : '—';
+  stats[1].textContent = card.stats ? card.stats.ipPerStart.toFixed(1) : '—';
+  stats[2].textContent = card.stats?.gs ?? '—';
+  stats[3].textContent = card.oppStats ? (card.oppStats.kPct * 100).toFixed(1) + '%' : '—';
+
+  const lambdaInput = el.querySelector('[data-field="lambda"]');
+  // Don't overwrite a value the user typed in
+  if (!lambdaInput.dataset.userEdited && card.lambda) {
+    lambdaInput.value = card.lambda.toFixed(2);
   }
 
-  return card;
+  el.classList.remove('loading');
+  updateResults(el);
 }
 
 function renderCard(card) {
@@ -720,7 +748,7 @@ function renderCard(card) {
   const oppAbbr = card.oppTeam.abbreviation || card.oppTeam.teamCode?.toUpperCase() || '';
 
   const el = document.createElement('div');
-  el.className = 'card';
+  el.className = card.loading ? 'card loading' : 'card';
   el.dataset.cardId = card.id;
   el.innerHTML = `
     <div class="card-header">
@@ -772,7 +800,10 @@ function renderCard(card) {
   `;
 
   el.querySelectorAll('input[data-field]').forEach(inp => {
-    inp.addEventListener('input', () => updateResults(el));
+    inp.addEventListener('input', () => {
+      if (inp.dataset.field === 'lambda') inp.dataset.userEdited = '1';
+      updateResults(el);
+    });
   });
 
   updateResults(el);
@@ -886,14 +917,14 @@ async function loadSlate() {
       return;
     }
 
-    setStatus(`Fetching pitcher stats for ${games.length} games...`, true);
-
-    const cardPromises = [];
+    // Build skeleton cards (no stats yet) and render immediately so the user sees the slate
+    const cards = [];
     for (const g of games) {
-      cardPromises.push(buildPitcherCard(g, true));
-      cardPromises.push(buildPitcherCard(g, false));
+      const home = makeCardSkeleton(g, true);
+      const away = makeCardSkeleton(g, false);
+      if (home) cards.push(home);
+      if (away) cards.push(away);
     }
-    const cards = (await Promise.all(cardPromises)).filter(c => c);
 
     if (cards.length === 0) {
       setStatus(`No probable pitchers announced yet for ${date}.`);
@@ -903,7 +934,25 @@ async function loadSlate() {
     cards.sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate));
 
     slate.innerHTML = '';
-    cards.forEach(c => slate.appendChild(renderCard(c)));
+    const cardEls = new Map();
+    for (const c of cards) {
+      const el = renderCard(c);
+      cardEls.set(c, el);
+      slate.appendChild(el);
+    }
+
+    // Fetch stats with concurrency cap (browsers limit to ~6 per host anyway)
+    const CONCURRENCY = 6;
+    let idx = 0;
+    async function worker() {
+      while (idx < cards.length) {
+        const c = cards[idx++];
+        await fetchAndApplyStats(c);
+        const el = cardEls.get(c);
+        if (el) updateCardStatsDom(el, c);
+      }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   } catch (e) {
     setStatus(`Error loading slate: ${e.message}`);
