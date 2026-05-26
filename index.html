@@ -955,8 +955,25 @@ async function loadSlate() {
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   } catch (e) {
-    setStatus(`Error loading slate: ${e.message}`);
     console.error(e);
+    const msg = String(e.message || e);
+    // "Failed to fetch" / "Load failed" / "NetworkError" → browser blocked the API call locally
+    if (/failed to fetch|load failed|networkerror|err_blocked|err_failed/i.test(msg)) {
+      setStatus(
+        `<div style="max-width:560px;margin:0 auto;text-align:left;line-height:1.6">` +
+        `<div style="font-size:16px;color:var(--text);font-weight:600;margin-bottom:10px">Your browser blocked the request to statsapi.mlb.com.</div>` +
+        `<div>Most common cause: an ad-blocker or privacy extension (uBlock, Brave Shields, AdGuard, Privacy Badger, etc.) blocks sports data domains.</div>` +
+        `<div style="margin-top:12px"><b>Fix:</b><ul style="margin:6px 0 0 18px;padding:0">` +
+        `<li>Try Incognito (Ctrl+Shift+N) — confirms it's an extension</li>` +
+        `<li>Click your blocker's icon and disable on this site</li>` +
+        `<li>F12 → Network tab → reload → look for <code>statsapi.mlb.com</code> in red</li>` +
+        `</ul></div>` +
+        `<div style="margin-top:12px;color:var(--text-mute);font-size:12px">Raw error: ${msg}</div>` +
+        `</div>`
+      );
+    } else {
+      setStatus(`Error loading slate: ${msg}`);
+    }
   } finally {
     btn.disabled = false;
     btn.innerHTML = origBtn;
