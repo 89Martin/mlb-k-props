@@ -258,6 +258,30 @@
     letter-spacing: 0.06em;
   }
 
+  .park-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    border: 1px solid transparent;
+  }
+  .park-badge.park-up   { color: var(--positive); background: var(--positive-bg); border-color: rgba(52,211,153,0.2); }
+  .park-badge.park-down { color: var(--negative); background: var(--negative-bg); border-color: rgba(248,113,113,0.2); }
+  .park-badge.park-neutral { color: var(--text-mute); background: rgba(255,255,255,0.05); }
+
+  .vegas-delta {
+    margin-left: 10px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+    border: 1px solid transparent;
+  }
+  .vegas-delta.ok      { color: var(--text-dim); background: rgba(255,255,255,0.04); border-color: var(--card-border); }
+  .vegas-delta.flagged { color: #fbbf24; background: rgba(251,191,36,0.10); border-color: rgba(251,191,36,0.25); }
+  .vegas-delta b { color: inherit; font-weight: 800; }
+
   .game-time {
     font-size: 11px;
     color: var(--text-mute);
@@ -536,9 +560,11 @@
 </main>
 
 <footer>
-  Model: Poisson with λ = (K/9) × (IP/GS / 9) × (opp K% / lg K%).
-  Override λ on any card to use your own projection. Edge = model prob − implied prob.
-  Stake = Kelly fraction × bankroll, capped at 0 when edge ≤ 0.
+  Model: Negative Binomial (25% over-dispersion vs Poisson — fatter tails for true high-K games).<br>
+  λ = (0.6 × L5 K/9 + 0.4 × season K/9) × (blended IP/GS / 9) × (opp K% / lg K%) × park factor.<br>
+  Falls back to season-only if a pitcher has &lt; 3 starts in the L5 window. Park factor applies to the home stadium.
+  <code>Δ vs line</code> chip flags when model disagrees with the book by &gt; 1.5 K — re-check before betting.
+  Override λ on any card to use your own number. Edge = model prob − implied prob. Stake = Kelly fraction × bankroll (0 when edge ≤ 0).
   Data: <code>statsapi.mlb.com</code> · Logos: <code>mlbstatic.com</code>
 </footer>
 
@@ -548,6 +574,20 @@
 // ============= MODEL =============
 const LEAGUE_K_PCT = 0.225;          // current MLB ~22.5%
 const DEFAULT_IP_PER_START = 5.2;
+const L5_WEIGHT = 0.6;               // 60% recent form, 40% season
+const NB_DISPERSION_K = 0.25;        // ~25% over-dispersion vs Poisson (variance/mean ≈ 1.25)
+const VEGAS_DELTA_FLAG = 1.5;        // |model λ − vegas line| > this → flag mismatch
+
+// Approximate K park factors (2024). >1 = more Ks, <1 = fewer.
+// Applied to home park (so both starting pitchers in that game get the multiplier).
+const PARK_K_FACTOR = {
+  SD: 1.04, OAK: 1.03, ATH: 1.03, NYM: 1.02, MIA: 1.02, TB: 1.02, TBR: 1.02,
+  SEA: 1.02, DET: 1.01, CIN: 1.01, ARI: 1.00, MIL: 1.00, NYY: 1.00, MIN: 1.00,
+  STL: 1.00, KC: 1.00, KCR: 1.00, LAA: 1.00, LAD: 1.00, ATL: 1.00, BAL: 1.00,
+  PIT: 1.00, CHC: 0.99, CWS: 0.99, CHW: 0.99, PHI: 0.99, TEX: 0.99, HOU: 0.99,
+  CLE: 0.99, WSH: 0.99, WSN: 0.99, TOR: 0.99, BOS: 0.98, SF: 0.98, SFG: 0.98,
+  COL: 0.95
+};
 
 function logFactorial(n) {
   if (n <= 1) return 0;
@@ -556,27 +596,64 @@ function logFactorial(n) {
   return s;
 }
 
-function poissonPmf(k, lambda) {
-  if (k < 0 || lambda <= 0) return 0;
-  return Math.exp(-lambda + k * Math.log(lambda) - logFactorial(k));
+// Lanczos log-gamma (needed for NB with non-integer size)
+function logGamma(x) {
+  if (x <= 0) return Infinity;
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  x -= 1;
+  const g = 7;
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+  ];
+  let a = c[0];
+  const t = x + g + 0.5;
+  for (let i = 1; i < 9; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
-function poissonCdf(k, lambda) {
+// Negative Binomial PMF (mean = mu, size = r). variance = mu + mu^2/r
+function negBinPmf(k, mu, r) {
+  if (k < 0 || mu <= 0 || r <= 0) return 0;
+  const p = r / (r + mu);
+  const lp = logGamma(k + r) - logGamma(r) - logFactorial(k) + r * Math.log(p) + k * Math.log(1 - p);
+  return Math.exp(lp);
+}
+
+function negBinCdf(k, mu, r) {
   if (k < 0) return 0;
   let cdf = 0;
-  for (let i = 0; i <= k; i++) cdf += poissonPmf(i, lambda);
+  for (let i = 0; i <= k; i++) cdf += negBinPmf(i, mu, r);
   return Math.min(1, cdf);
 }
 
+// Dispersion parameter chosen so variance/mean ≈ 1 + NB_DISPERSION_K
+function nbSizeForMean(mu) {
+  return Math.max(2, mu / Math.max(0.05, NB_DISPERSION_K));
+}
+
 function probOver(line, lambda) {
+  const r = nbSizeForMean(lambda);
   if (Number.isInteger(line)) {
-    // push possible — quote prob excluding push (DraftKings/FanDuel behavior on whole lines)
-    const pPush = poissonPmf(line, lambda);
-    const pOver = 1 - poissonCdf(line, lambda);
+    // push possible — quote prob excluding push (DK/FD behavior on whole lines)
+    const pPush = negBinPmf(line, lambda, r);
+    const pOver = 1 - negBinCdf(line, lambda, r);
     return pPush >= 0.999 ? 0.5 : pOver / (1 - pPush);
   }
   const t = Math.ceil(line);
-  return 1 - poissonCdf(t - 1, lambda);
+  return 1 - negBinCdf(t - 1, lambda, r);
+}
+
+// MLB API returns innings as "X.Y" where .1 = 1/3, .2 = 2/3 (NOT decimal)
+function ipToDecimal(ip) {
+  if (ip === null || ip === undefined) return 0;
+  const s = String(ip);
+  const dot = s.indexOf('.');
+  if (dot < 0) return parseFloat(s) || 0;
+  const whole = parseInt(s.slice(0, dot), 10) || 0;
+  const frac = parseInt(s.slice(dot + 1), 10) || 0;
+  return whole + frac / 3;
 }
 
 function americanToImplied(odds) {
@@ -631,9 +708,28 @@ async function getPitcherStats(personId, season) {
   return fetchJSON(url);
 }
 
+async function getPitcherGameLog(personId, season) {
+  const url = `https://statsapi.mlb.com/api/v1/people/${personId}/stats?stats=gameLog&group=pitching&season=${season}`;
+  return fetchJSON(url);
+}
+
 async function getTeamHitting(teamId, season) {
   const url = `https://statsapi.mlb.com/api/v1/teams/${teamId}/stats?stats=season&group=hitting&season=${season}`;
   return fetchJSON(url);
+}
+
+// Last N starts → aggregate K/9 and IP/start. Returns null if not enough starts.
+function aggregateLastNStarts(gameLog, n, minStarts = 3) {
+  const splits = gameLog?.stats?.[0]?.splits || [];
+  const starts = splits.filter(s => s.stat?.gamesStarted === 1 && parseFloat(s.stat?.inningsPitched || '0') > 0);
+  if (starts.length < minStarts) return null;
+  // Most recent first
+  starts.sort((a, b) => new Date(b.date) - new Date(a.date));
+  const last = starts.slice(0, n);
+  const ip = last.reduce((s, g) => s + ipToDecimal(g.stat.inningsPitched), 0);
+  const k = last.reduce((s, g) => s + (g.stat.strikeOuts || 0), 0);
+  if (ip <= 0) return null;
+  return { n: last.length, ip, k, kPer9: k * 9 / ip, ipPerStart: ip / last.length };
 }
 
 // ============= UI =============
@@ -684,23 +780,26 @@ function makeCardSkeleton(game, isHomePitcher) {
 
 async function fetchAndApplyStats(card) {
   try {
-    const [pStats, oppStats] = await Promise.all([
+    const [pStats, pLog, oppStats] = await Promise.all([
       getPitcherStats(card.pitcher.id, card.season).catch(() => null),
+      getPitcherGameLog(card.pitcher.id, card.season).catch(() => null),
       getTeamHitting(card.oppTeam.id, card.season).catch(() => null)
     ]);
 
     const seasonStat = pStats?.stats?.[0]?.splits?.[0]?.stat;
     if (seasonStat) {
-      const ip = parseFloat(seasonStat.inningsPitched || '0');
+      const ipDecimal = ipToDecimal(seasonStat.inningsPitched);
       const gs = seasonStat.gamesStarted || 0;
       const k = seasonStat.strikeOuts || 0;
       const kPer9raw = parseFloat(seasonStat.strikeoutsPer9Inn || '0');
-      const kPer9 = kPer9raw || (ip > 0 ? (k * 9 / ip) : 0);
-      // IP/GS gets inflated if pitcher has relief innings too — clamp to a sane starter range
-      const rawIpPerStart = gs >= 3 ? ip / gs : DEFAULT_IP_PER_START;
-      const ipPerStart = (rawIpPerStart >= 3 && rawIpPerStart <= 7.5) ? rawIpPerStart : DEFAULT_IP_PER_START;
-      card.stats = { kPer9, ip, gs, ipPerStart, k };
+      const seasonKPer9 = kPer9raw || (ipDecimal > 0 ? (k * 9 / ipDecimal) : 0);
+      const rawIpPerStart = gs >= 3 ? ipDecimal / gs : DEFAULT_IP_PER_START;
+      const seasonIpPerStart = (rawIpPerStart >= 3 && rawIpPerStart <= 7.5) ? rawIpPerStart : DEFAULT_IP_PER_START;
+      card.stats = { kPer9: seasonKPer9, ip: ipDecimal, gs, ipPerStart: seasonIpPerStart, k };
     }
+
+    // L5 blend — biggest accuracy gain when pitcher's form differs from season aggregate
+    card.l5 = pLog ? aggregateLastNStarts(pLog, 5, 3) : null;
 
     const oppStat = oppStats?.stats?.[0]?.splits?.[0]?.stat;
     if (oppStat) {
@@ -709,9 +808,23 @@ async function fetchAndApplyStats(card) {
       card.oppStats = { kPct: pa > 0 ? so / pa : LEAGUE_K_PCT, pa };
     }
 
+    // Park factor — applies to the home stadium (whoever's pitching there gets the bump/cut)
+    const homeTeam = card.isHome ? card.pitcherTeam : card.oppTeam;
+    const homeAbbr = homeTeam.abbreviation || '';
+    card.parkFactor = PARK_K_FACTOR[homeAbbr] ?? 1.0;
+
+    // Blended projection
     if (card.stats && card.stats.kPer9 > 0) {
-      const adj = card.oppStats ? (card.oppStats.kPct / LEAGUE_K_PCT) : 1;
-      card.lambda = card.stats.kPer9 * (card.stats.ipPerStart / 9) * adj;
+      let projKPer9 = card.stats.kPer9;
+      let projIpPerStart = card.stats.ipPerStart;
+      if (card.l5) {
+        projKPer9 = L5_WEIGHT * card.l5.kPer9 + (1 - L5_WEIGHT) * card.stats.kPer9;
+        // Blend IP/start too but keep within sane bounds
+        const blendedIp = L5_WEIGHT * card.l5.ipPerStart + (1 - L5_WEIGHT) * card.stats.ipPerStart;
+        projIpPerStart = (blendedIp >= 3 && blendedIp <= 7.5) ? blendedIp : card.stats.ipPerStart;
+      }
+      const oppAdj = card.oppStats ? (card.oppStats.kPct / LEAGUE_K_PCT) : 1;
+      card.lambda = projKPer9 * (projIpPerStart / 9) * oppAdj * card.parkFactor;
     }
   } catch (e) {
     console.warn(`Stats fetch failed for ${card.pitcher.fullName}:`, e);
@@ -721,11 +834,23 @@ async function fetchAndApplyStats(card) {
 }
 
 function updateCardStatsDom(el, card) {
-  const stats = el.querySelectorAll('.projection-row .stat-value');
-  stats[0].textContent = card.stats ? card.stats.kPer9.toFixed(2) : '—';
-  stats[1].textContent = card.stats ? card.stats.ipPerStart.toFixed(1) : '—';
-  stats[2].textContent = card.stats?.gs ?? '—';
-  stats[3].textContent = card.oppStats ? (card.oppStats.kPct * 100).toFixed(1) + '%' : '—';
+  const setStat = (name, value) => {
+    const node = el.querySelector(`.stat-value[data-stat="${name}"]`);
+    if (node) node.textContent = value;
+  };
+  setStat('kPer9Sn', card.stats ? card.stats.kPer9.toFixed(2) : '—');
+  setStat('kPer9L5', card.l5 ? card.l5.kPer9.toFixed(2) : '—');
+  setStat('ipPS', card.stats ? card.stats.ipPerStart.toFixed(1) : '—');
+  setStat('oppK', card.oppStats ? (card.oppStats.kPct * 100).toFixed(1) + '%' : '—');
+
+  // Park badge
+  const park = el.querySelector('[data-field="parkBadge"]');
+  if (park && card.parkFactor) {
+    park.textContent = 'PARK ' + card.parkFactor.toFixed(2) + '×';
+    park.classList.remove('park-up', 'park-down', 'park-neutral');
+    park.classList.add(card.parkFactor > 1.01 ? 'park-up' : card.parkFactor < 0.99 ? 'park-down' : 'park-neutral');
+    park.style.display = '';
+  }
 
   const lambdaInput = el.querySelector('[data-field="lambda"]');
   // Don't overwrite a value the user typed in
@@ -739,9 +864,12 @@ function updateCardStatsDom(el, card) {
 
 function renderCard(card) {
   const lambda = card.lambda ? card.lambda.toFixed(2) : '';
-  const kPer9 = card.stats ? card.stats.kPer9.toFixed(2) : '—';
+  const kPer9Sn = card.stats ? card.stats.kPer9.toFixed(2) : '—';
+  const kPer9L5 = card.l5 ? card.l5.kPer9.toFixed(2) : '—';
   const ipPS = card.stats ? card.stats.ipPerStart.toFixed(1) : '—';
   const oppK = card.oppStats ? (card.oppStats.kPct * 100).toFixed(1) + '%' : '—';
+  const pf = card.parkFactor ? card.parkFactor.toFixed(2) + '×' : '';
+  const pfClass = card.parkFactor > 1.01 ? 'park-up' : card.parkFactor < 0.99 ? 'park-down' : 'park-neutral';
   const hand = card.pitcher.pitchHand?.code || '';
   const handLabel = hand === 'L' ? 'LHP' : hand === 'R' ? 'RHP' : '';
   const teamAbbr = card.pitcherTeam.abbreviation || card.pitcherTeam.teamCode?.toUpperCase() || '';
@@ -762,20 +890,24 @@ function renderCard(card) {
         <div class="pitcher-meta">
           ${handLabel ? `<span class="hand-badge">${handLabel}</span>` : ''}
           <span>${teamAbbr} ${card.isHome ? 'vs' : '@'} ${oppAbbr}</span>
+          <span class="park-badge ${pfClass}" data-field="parkBadge" title="Park K factor — applied to home stadium" style="${pf ? '' : 'display:none'}">${pf ? 'PARK ' + pf : ''}</span>
         </div>
       </div>
       <div class="game-time">${gameTimeFmt(card.gameDate)}</div>
     </div>
 
     <div class="projection-row">
-      <div class="stat"><div class="stat-label">K/9</div><div class="stat-value">${kPer9}</div></div>
-      <div class="stat"><div class="stat-label">IP/GS</div><div class="stat-value">${ipPS}</div></div>
-      <div class="stat"><div class="stat-label">GS</div><div class="stat-value">${card.stats?.gs ?? '—'}</div></div>
-      <div class="stat"><div class="stat-label">Opp K%</div><div class="stat-value">${oppK}</div></div>
+      <div class="stat"><div class="stat-label">K/9 Sn</div><div class="stat-value" data-stat="kPer9Sn">${kPer9Sn}</div></div>
+      <div class="stat"><div class="stat-label">K/9 L5</div><div class="stat-value" data-stat="kPer9L5">${kPer9L5}</div></div>
+      <div class="stat"><div class="stat-label">IP/GS</div><div class="stat-value" data-stat="ipPS">${ipPS}</div></div>
+      <div class="stat"><div class="stat-label">Opp K%</div><div class="stat-value" data-stat="oppK">${oppK}</div></div>
     </div>
 
     <div class="lambda-row">
-      <div class="lambda-label">Projected Ks (λ)<span class="hint">— edit to override</span></div>
+      <div class="lambda-label">
+        Projected Ks (λ)<span class="hint">— edit to override</span>
+        <span class="vegas-delta" style="display:none"></span>
+      </div>
       <input type="number" class="lambda-input" data-field="lambda" step="0.1" min="0" value="${lambda}" placeholder="—">
     </div>
 
@@ -816,9 +948,27 @@ function updateResults(el) {
   const overOdds = parseFloat(el.querySelector('[data-field="overOdds"]').value);
   const underOdds = parseFloat(el.querySelector('[data-field="underOdds"]').value);
   const out = el.querySelector('.results-output');
+  const vegasDelta = el.querySelector('.vegas-delta');
 
   const bankroll = parseFloat($('bankroll').value) || 0;
   const kellyFrac = parseFloat($('kelly').value) || 0;
+
+  // Vegas vs model delta (line − λ). Big gap = model disagrees with market, worth a sanity check.
+  if (vegasDelta) {
+    if (!isNaN(line) && lambda > 0) {
+      const delta = line - lambda;
+      const flagged = Math.abs(delta) > VEGAS_DELTA_FLAG;
+      const sign = delta > 0 ? '+' : '';
+      vegasDelta.innerHTML = `Δ vs line: <b>${sign}${delta.toFixed(1)}K</b>${flagged ? ' ⚠' : ''}`;
+      vegasDelta.className = 'vegas-delta ' + (flagged ? 'flagged' : 'ok');
+      vegasDelta.title = flagged
+        ? `Model λ differs from book line by more than ${VEGAS_DELTA_FLAG}K — double-check before betting (Vegas often knows something)`
+        : 'Model is within tolerance of the book line';
+      vegasDelta.style.display = '';
+    } else {
+      vegasDelta.style.display = 'none';
+    }
+  }
 
   if (!lambda || lambda <= 0) {
     out.innerHTML = '<div class="empty-hint">Enter a projection (λ) to see fair odds.</div>';
